@@ -68,9 +68,11 @@ void *making_machine(void *arg) {
     while (1) {
           do_work(4);
           // Wait if pool is full
+          pthread_mutex_lock(&pool_mutex);
         while (pool_count >= S) {
             pthread_cond_wait(&pool_not_full, &pool_mutex);
         }
+        pthread_mutex_unlock(&pool_mutex);
                 // Send to pool (1 unit of time)
             do_work(1);
         // Check if we should stop (all N hot dogs have been made)
@@ -82,8 +84,10 @@ void *making_machine(void *arg) {
         
         // Get the next hot dog ID and increment counters
         int current_hot_dog_id = next_hot_dog_id++;
+
         hot_dogs_made++;
         made_by_machine[machine_num - 1]++;
+
         pthread_mutex_unlock(&counter_mutex);
         
 
@@ -125,6 +129,19 @@ void *packing_machine(void *arg) {
     sprintf(machine_id, "p%d", machine_num);
     
     while (1) {
+        // Check if we should stop (all N hot dogs have been packed)
+        pthread_mutex_lock(&counter_mutex);
+        if (hot_dogs_packed >= N) {
+            pthread_mutex_unlock(&counter_mutex);
+            break;
+        }
+        pthread_mutex_unlock(&counter_mutex);
+        
+        // Take hot dog from pool (with synchronization)
+        HotDog hotdog;
+        pthread_mutex_lock(&pool_mutex);
+        
+        // Wait if pool is empty (MUST hold mutex before checking and waiting)
         while (pool_count == 0) {
             // Check again if we should stop after waking up
             pthread_mutex_lock(&counter_mutex);
@@ -137,22 +154,6 @@ void *packing_machine(void *arg) {
             
             pthread_cond_wait(&pool_not_empty, &pool_mutex);
         }
-              // Take from pool (1 unit of time)
-              do_work(1);
-
-        // Check if we should stop (all N hot dogs have been packed)
-        pthread_mutex_lock(&counter_mutex);
-        if (hot_dogs_packed >= N) {
-            pthread_mutex_unlock(&counter_mutex);
-            break;
-        }
-        pthread_mutex_unlock(&counter_mutex);
-        
-        // Take hot dog from pool (with synchronization)
-        HotDog hotdog;
-        pthread_mutex_lock(&pool_mutex);
-    
-       
         
         // Take hot dog from the front of the queue (circular buffer)
         hotdog = pool[pool_front];
@@ -163,7 +164,8 @@ void *packing_machine(void *arg) {
         pthread_cond_signal(&pool_not_full);
         pthread_mutex_unlock(&pool_mutex);
         
-  
+        // Take from pool (1 unit of time) - happens AFTER taking from pool
+        do_work(1);
         
         // Pack hot dog (2 units of time)
         do_work(2);
@@ -174,7 +176,7 @@ void *packing_machine(void *arg) {
         packed_by_machine[machine_num - 1]++;
         pthread_mutex_unlock(&counter_mutex);
         
-        // Log the packing action (recheck logic)
+        // Log the packing action
         char log_message[100];
         sprintf(log_message, "%s gets %d from %s", machine_id, 
                 hotdog.hot_dog_id, hotdog.making_machine_id);
