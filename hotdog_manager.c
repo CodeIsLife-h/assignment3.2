@@ -67,44 +67,39 @@ void *making_machine(void *arg) {
     while (1) {
            // Make hot dog (4 units of time)
            do_work(4);
-           
         // Check if we should stop and get next hot dog ID (with mutex)
         pthread_mutex_lock(&global_mutex);
-        //signal, wait for not full 
-        while (pool_count >= S) {
-            pthread_cond_wait(&pool_not_full, &global_mutex);
-        }
-        //check if over the N limit, else break and join back
         if (hot_dogs_made >= N) {
             pthread_mutex_unlock(&global_mutex);
             break;
         }
+               
 
-        
+        // Wait if pool is full
+        while (pool_count >= S) {
+            pthread_cond_wait(&pool_not_full, &global_mutex);
+        }
          // Send to pool (1 unit of time)
          do_work(1);
         
-         //add the hot dog to the pool
-            //get next hot dog id and increment counters
-            int current_hot_dog_id = next_hot_dog_id++;
-            hot_dogs_made++;
-            made_by_machine[machine_num - 1]++;
+        // Get the next hot dog ID and increment counters
+        int current_hot_dog_id = next_hot_dog_id++;
+        hot_dogs_made++;
+        made_by_machine[machine_num - 1]++;
 
-            // Create hot dog structure
-            HotDog hotdog;
-            hotdog.hot_dog_id = current_hot_dog_id;
-            strcpy(hotdog.making_machine_id, machine_id);
+        // Create hot dog structure
+        HotDog hotdog;
+        hotdog.hot_dog_id = current_hot_dog_id;
+        strcpy(hotdog.making_machine_id, machine_id);
 
-            // Add hot dog to the end of the queue (circular buffer)
-            pool[pool_rear] = hotdog;
-            pool_rear = (pool_rear + 1) % S;
-            pool_count++;
+        // Add hot dog to the end of the queue (circular buffer)
+        pool[pool_rear] = hotdog;
+        pool_rear = (pool_rear + 1) % S;
+        pool_count++;
         
         // Signal that pool is not empty (wake up packing machines)
         pthread_cond_signal(&pool_not_empty);
-        //unlock the mutex
         pthread_mutex_unlock(&global_mutex);
-
         // Log the making action, outside the mutex 
         char log_message[100];
         sprintf(log_message, "%s puts %d", machine_id, current_hot_dog_id);
@@ -122,22 +117,26 @@ void *packing_machine(void *arg) {
     sprintf(machine_id, "p%d", machine_num);
     
     while (1) {
-        //in question 
         pthread_mutex_lock(&global_mutex);
-        while (pool_count == 0 && hot_dogs_packed < N) {
-    pthread_cond_wait(&pool_not_empty, &global_mutex);
-}
-//check if we should stop 
-if (hot_dogs_packed >= N) {
-    pthread_mutex_unlock(&global_mutex);
-    return NULL;
-}
+        while (pool_count == 0) {
+            // Check again if we should stop after waking up
+            if (hot_dogs_packed >= N) {
+                pthread_mutex_unlock(&global_mutex);
+                return NULL;
+            }
+            
+            pthread_cond_wait(&pool_not_empty, &global_mutex);//waiting here for the signal
+        }
 
         do_work(1);
         HotDog hotdog;
         
         
-
+        // Check if we should stop
+        if (hot_dogs_packed >= N) {
+            pthread_mutex_unlock(&global_mutex);
+            break;
+        }
        
         
         // Take hot dog from the front of the queue (circular buffer)
