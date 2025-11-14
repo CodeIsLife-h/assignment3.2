@@ -77,21 +77,20 @@ void *making_machine(void *arg)
         do_work(4);
         // Check if we should stop and get next hot dog ID (with mutex)
         pthread_mutex_lock(&global_mutex);
+        while (pool_count >= S)
+        {
+            pthread_cond_wait(&pool_not_full, &global_mutex);
+        }
         if (hot_dogs_made >= N)
         {
             pthread_mutex_unlock(&global_mutex);
             break;
         }
-
-        // Wait if pool is full
-        while (pool_count >= S)
-        {
-            pthread_cond_wait(&pool_not_full, &global_mutex);
-        }
-        pthread_mutex_unlock(&global_mutex);
+       
+        
         // Send to pool (1 unit of time)
         do_work(1);
-        pthread_mutex_lock(&global_mutex);
+
         // Get the next hot dog ID and increment counters
         int current_hot_dog_id = next_hot_dog_id++;
         hot_dogs_made++;
@@ -139,10 +138,10 @@ void *packing_machine(void *arg)
             pthread_mutex_unlock(&global_mutex);
             return NULL;
         }
-        pthread_mutex_unlock(&global_mutex);
+
         do_work(1);
         HotDog hotdog;
-        pthread_mutex_lock(&global_mutex);
+        
 
         // Take hot dog from the front of the queue (circular buffer)
         hotdog = pool[pool_front];
@@ -155,6 +154,7 @@ void *packing_machine(void *arg)
 
         // Signal that pool is not full (wake up making machines)
         pthread_cond_signal(&pool_not_full);
+        
         pthread_mutex_unlock(&global_mutex);
 
         // Pack hot dog (2 units of time)
