@@ -22,8 +22,8 @@ int pool_front = 0;      // Front index of the queue
 int pool_rear = 0;       // Rear index of the queue
 int pool_count = 0;      // Current number of hot dogs in the pool
 
-// Synchronization primitives for pool access
-pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Single mutex for all synchronization (pool, counters, and statistics)
+pthread_mutex_t global_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t pool_not_full = PTHREAD_COND_INITIALIZER;   // Signal when pool has space
 pthread_cond_t pool_not_empty = PTHREAD_COND_INITIALIZER;  // Signal when pool has items
 
@@ -34,7 +34,6 @@ pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 int hot_dogs_made = 0;      // Total number of hot dogs made
 int hot_dogs_packed = 0;    // Total number of hot dogs packed
 int next_hot_dog_id = 1;    // Next hot dog ID to assign
-pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Statistics arrays for summary
 int *made_by_machine;       // Array to track hot dogs made by each making machine
@@ -66,57 +65,46 @@ void *making_machine(void *arg) {
     sprintf(machine_id, "m%d", machine_num);
     
     while (1) {
-          do_work(4);
-          // Wait if pool is full
-          pthread_mutex_lock(&pool_mutex);
-        while (pool_count >= S) {
-            pthread_cond_wait(&pool_not_full, &pool_mutex);
-        }
-        pthread_mutex_unlock(&pool_mutex);
-                // Send to pool (1 unit of time)
-            do_work(1);
-        // Check if we should stop (all N hot dogs have been made)
-        pthread_mutex_lock(&counter_mutex);
+           // Make hot dog (4 units of time)
+           do_work(4);
+        // Check if we should stop and get next hot dog ID (with mutex)
+        pthread_mutex_lock(&global_mutex);
         if (hot_dogs_made >= N) {
-            pthread_mutex_unlock(&counter_mutex);
+            pthread_mutex_unlock(&global_mutex);
             break;
         }
+               
+
+        // Wait if pool is full
+        while (pool_count >= S) {
+            pthread_cond_wait(&pool_not_full, &global_mutex);
+        }
+         // Send to pool (1 unit of time)
+         do_work(1);
         
         // Get the next hot dog ID and increment counters
         int current_hot_dog_id = next_hot_dog_id++;
-
         hot_dogs_made++;
         made_by_machine[machine_num - 1]++;
 
-        pthread_mutex_unlock(&counter_mutex);
-        
-
-        
         // Create hot dog structure
         HotDog hotdog;
         hotdog.hot_dog_id = current_hot_dog_id;
         strcpy(hotdog.making_machine_id, machine_id);
-        
 
-        
-        // Add hot dog to pool (with synchronization)
-        pthread_mutex_lock(&pool_mutex);
-        
-        
-        
         // Add hot dog to the end of the queue (circular buffer)
         pool[pool_rear] = hotdog;
         pool_rear = (pool_rear + 1) % S;
         pool_count++;
         
-        // Log the making action (recheck logic)
+        // Signal that pool is not empty (wake up packing machines)
+        pthread_cond_signal(&pool_not_empty);
+        pthread_mutex_unlock(&global_mutex);
+        // Log the making action, outside the mutex 
         char log_message[100];
         sprintf(log_message, "%s puts %d", machine_id, current_hot_dog_id);
         log_to_file(log_message);
-        
-        // Signal that pool is not empty (wake up packing machines)
-        pthread_cond_signal(&pool_not_empty);
-        pthread_mutex_unlock(&pool_mutex);
+      
     }
     
     return NULL;
@@ -129,52 +117,43 @@ void *packing_machine(void *arg) {
     sprintf(machine_id, "p%d", machine_num);
     
     while (1) {
-        // Check if we should stop (all N hot dogs have been packed)
-        pthread_mutex_lock(&counter_mutex);
-        if (hot_dogs_packed >= N) {
-            pthread_mutex_unlock(&counter_mutex);
-            break;
-        }
-        pthread_mutex_unlock(&counter_mutex);
-        
-        // Take hot dog from pool (with synchronization)
-        HotDog hotdog;
-        pthread_mutex_lock(&pool_mutex);
-        
-        // Wait if pool is empty (MUST hold mutex before checking and waiting)
+        pthread_mutex_lock(&global_mutex);
         while (pool_count == 0) {
             // Check again if we should stop after waking up
-            pthread_mutex_lock(&counter_mutex);
             if (hot_dogs_packed >= N) {
-                pthread_mutex_unlock(&counter_mutex);
-                pthread_mutex_unlock(&pool_mutex);
+                pthread_mutex_unlock(&global_mutex);
                 return NULL;
             }
-            pthread_mutex_unlock(&counter_mutex);
             
-            pthread_cond_wait(&pool_not_empty, &pool_mutex);
+            pthread_cond_wait(&pool_not_empty, &global_mutex);//waiting here for the signal
         }
+
+        do_work(1);
+        HotDog hotdog;
+        
+        
+        // Check if we should stop
+        if (hot_dogs_packed >= N) {
+            pthread_mutex_unlock(&global_mutex);
+            break;
+        }
+       
         
         // Take hot dog from the front of the queue (circular buffer)
         hotdog = pool[pool_front];
         pool_front = (pool_front + 1) % S;
         pool_count--;
         
+        //pack the hot dog
+        hot_dogs_packed++;
+        packed_by_machine[machine_num - 1]++;
+        
         // Signal that pool is not full (wake up making machines)
         pthread_cond_signal(&pool_not_full);
-        pthread_mutex_unlock(&pool_mutex);
-        
-        // Take from pool (1 unit of time) - happens AFTER taking from pool
-        do_work(1);
+        pthread_mutex_unlock(&global_mutex);
         
         // Pack hot dog (2 units of time)
         do_work(2);
-        
-        // Update counters and statistics
-        pthread_mutex_lock(&counter_mutex);
-        hot_dogs_packed++;
-        packed_by_machine[machine_num - 1]++;
-        pthread_mutex_unlock(&counter_mutex);
         
         // Log the packing action
         char log_message[100];
@@ -300,9 +279,8 @@ int main(int argc, char *argv[]) {
     free(packing_threads);
     free(packing_nums);
     
-    pthread_mutex_destroy(&pool_mutex);
+    pthread_mutex_destroy(&global_mutex);
     pthread_mutex_destroy(&log_mutex);
-    pthread_mutex_destroy(&counter_mutex);
     pthread_cond_destroy(&pool_not_full);
     pthread_cond_destroy(&pool_not_empty);
     
